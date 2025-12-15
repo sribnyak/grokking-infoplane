@@ -9,24 +9,27 @@ As per the theory proposed by Shwartz-Ziv and Tishby [2], the training can be di
 
 To reproduce the results you need to install the `mutinfo` library from https://github.com/VanessB/Information-v3.
 
-1) run `pip install -e .` in `./Information-v3/`
+1) run `pip install -r ./requirements.txt` in the project folder
 
-2) run `pip install -r ./requirements.txt` in `./Grokking-InformationPlane/`
+2) in `Information-v3\source\python\mutinfo\estimators\functional.py` delete `DistanceMetric`
+(unused and undefined)
+
+3) run `pip install -e .` in `./Information-v3/`
 
 ## Running the code
 
-```python
+```bash
 # Run the training
-py train_mnist.py
+python train_mnist.py
 
 # The code uses wandb with hydra so you can specify configs
-py train_mnist.py --config-path configs/custom_folder --config-name custom_config.yaml
+python train_mnist.py --config-path configs/custom_folder --config-name custom_config.yaml
 
 # and certain params 
-py train_mnist.py --config-path configs/custom_folder --config-name custom_config.yaml  model.initialization_scale=6
+python train_mnist.py --config-path configs/custom_folder --config-name custom_config.yaml  model.initialization_scale=6
 
 # You can actually get elaborate like that, but it gets ugly (for win10 cmd)
-py train_mnist.py --config-path configs/ --config-name default.yaml ^
+python train_mnist.py --config-path configs/ --config-name default.yaml ^
     project_name=custom_project_name ^
     custom_run_name=scale_${model.initialization_scale}-seed_${seed}-steps_${train.optimization_steps}-wd_${train.weight_decay}^
     model.initialization_scale=6 ^

@@ -17,7 +17,7 @@ import torch.nn as nn
 import torchvision
 import torch.nn.functional as F
 
-import wandb
+from torch.utils.tensorboard import SummaryWriter
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
@@ -62,21 +62,26 @@ def main(cfg: DictConfig):
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
 
-    run = wandb.init(
-        project=cfg.project_name,
-        name=cfg.custom_run_name,
-        # Saving config to wandb
-        config=OmegaConf.to_container(
-            cfg, resolve=True, throw_on_missing=True
-        )
-    )
+    # Создание уникального имени запуска и инициализация TensorBoard Writer
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{cfg.custom_run_name}_{timestamp}" if cfg.custom_run_name else f"run_{timestamp}"
+    log_dir = Path("runs") / run_name
+    writer = SummaryWriter(log_dir=log_dir)
+
+    # Сохранение конфигурации в TensorBoard текстом
+    config_text = OmegaConf.to_yaml(cfg)
+    writer.add_text("config", config_text)
+
     print(OmegaConf.to_yaml(cfg))
 
     # Filepaths for Information Plane plot
     dd_figure_paths = {}
     for name_subset in ['train', 'eval']:
-        figure_filename = "InfoPlane-" + wandb.run.name + f"_{name_subset}" + ".png"
-        dd_figure_paths[name_subset] = os.path.join(wandb.run.dir, figure_filename)
+        # Используем локальную директорию
+        figure_dir = Path("figures") / run_name
+        figure_dir.mkdir(parents=True, exist_ok=True)
+        figure_filename = f"InfoPlane-{run_name}_{name_subset}.png"
+        dd_figure_paths[name_subset] = str(figure_dir / figure_filename)
 
     """
     Data
@@ -146,7 +151,8 @@ def main(cfg: DictConfig):
         load_X_autoencoder(
             model_ae=X_autoencoder,
             encoder_path=cfg.ae.encoder_path,
-            decoder_path=cfg.ae.decoder_path
+            decoder_path=cfg.ae.decoder_path,
+            device=device
         )
         X_autoencoder.agn.enabled_on_inference = False
 
@@ -212,16 +218,12 @@ def main(cfg: DictConfig):
                 
                 # Used later for InfoPlane plotting
                 log_steps.append(steps)
-                # Log
-                run.log(
-                    {
-                        "Loss/train": train_loss_,
-                        "Loss/test": test_loss_,
-                        "Acc/train": train_acc_,
-                        "Acc/test": test_acc_,
-                    },
-                    step=steps
-                )
+                # Логирование скаляров в TensorBoard
+                writer.add_scalar("Loss/train", train_loss_, steps)
+                writer.add_scalar("Loss/test", test_loss_, steps)
+                writer.add_scalar("Acc/train", train_acc_, steps)
+                writer.add_scalar("Acc/test", test_acc_, steps)
+
                 # Log WN
                 wn_layers = []
                 wn_layers.append(get_float_wn(model_clf.linear_1.parameters()))
@@ -229,8 +231,8 @@ def main(cfg: DictConfig):
                 wn_layers.append(get_float_wn(model_clf.linear_3.parameters()))
                 wn_total = sum(wn_layers)
                 for i, wn_layer in enumerate(wn_layers):
-                    run.log({f"WN/linear_{i+1}": wn_layer}, step=steps)
-                run.log({"WN/total": wn_total,}, step=steps)
+                    writer.add_scalar(f"WN/linear_{i+1}", wn_layer, steps)
+                writer.add_scalar("WN/total", wn_total, steps)
 
                 pbar.set_description("L: {0:1.1e}|{1:1.1e}. A: {2:2.1f}%|{3:2.1f}%".format(
                     train_loss_,
@@ -255,23 +257,12 @@ def main(cfg: DictConfig):
                         # Never activating on the whole data subset
                         num_dead_nrns = (logits_layer.sum(axis=0) == 0).sum()
 
-                        run.log({
-                            # f"H_logits_data_mean_{name_subset}/{layer_name}": H_layer_data.mean(),
-                            # f"H_logits_data_var_{name_subset}/{layer_name}": H_layer_data.var(),
-                            f"logits_mean_{name_subset}/{layer_name}": logits_layer.mean(),
-                            f"logits_var_{name_subset}/{layer_name}": logits_layer.var(),
-                            f"num_dead_nrns_{name_subset}/{layer_name}": num_dead_nrns,
-                        }, step=steps)
-
-                        # # Save variance of the output of layers for debugging
-                        # dd_key = f"{name_subset}_{layer_name}"
-                        # if dd_key not in dd_df_bul2:
-                        #     dd_df_bul2[dd_key] = pd.DataFrame(data=logits_layer.var(axis=0)).T
-                        # else:
-                        #     dd_df_bul2[dd_key].loc[len(dd_df_bul2[dd_key])] = logits_layer.var(
-                        #         axis=0)  # only use with a RangeIndex!
-                        #     table_bul2_path = os.path.join(wandb.run.dir, f"out_var_{dd_key}.csv")
-                        #     dd_df_bul2[dd_key].to_csv(table_bul2_path, index=False)
+                        # Логирование кастомных метрик
+                        # writer.add_scalar(f"H_logits_data_mean_{name_subset}/{layer_name}", H_layer_data.mean(), steps)
+                        # writer.add_scalar(f"H_logits_data_var_{name_subset}/{layer_name}", H_layer_data.var(), steps)
+                        writer.add_scalar(f"logits_mean_{name_subset}/{layer_name}", logits_layer.mean(), steps)
+                        writer.add_scalar(f"logits_var_{name_subset}/{layer_name}", logits_layer.var(), steps)
+                        writer.add_scalar(f"num_dead_nrns_{name_subset}/{layer_name}", num_dead_nrns, steps)
 
                 # Layers
                 # Set apply_agn=True (default) for computing MI
@@ -394,15 +385,11 @@ def main(cfg: DictConfig):
                             # tuple of size (2) : L_Y_mi_[0] - value, L_Y_mi_[1] - error
                             L_Y_mi_ = L_Y_mi_estimator.estimate(L_compressed, dd_targets_mi[name_subset], verbose=0)
                             dd_MI_L_Y[name_subset][layer_name].append(L_Y_mi_)
-                        # Log
-                        run.log(
-                            {
-                                f"MI(X;L)_{name_subset}/{layer_name}": X_L_mi_[0],
-                                f"MI(L;Y)_{name_subset}/{layer_name}": L_Y_mi_[0],
-                                f"MI(X;L)_Errors_{name_subset}/{layer_name}": X_L_mi_[1],
-                                f"MI(L;Y)_Errors_{name_subset}/{layer_name}": L_Y_mi_[1],
-                            },
-                            step=steps)
+                        # Логирование метрик Mutual Information
+                        writer.add_scalar(f"MI(X;L)_{name_subset}/{layer_name}", X_L_mi_[0], steps)
+                        writer.add_scalar(f"MI(L;Y)_{name_subset}/{layer_name}", L_Y_mi_[0], steps)
+                        writer.add_scalar(f"MI(X;L)_Errors_{name_subset}/{layer_name}", X_L_mi_[1], steps)
+                        writer.add_scalar(f"MI(L;Y)_Errors_{name_subset}/{layer_name}", L_Y_mi_[1], steps)
 
                     # Plotting Information Plane
                     figure_path = dd_figure_paths[name_subset]
@@ -410,8 +397,12 @@ def main(cfg: DictConfig):
                                     dd_MI_L_Y[name_subset],
                                     figure_path=figure_path,
                                     filtered_MI_X_L=filtered_MI_X_L, filtered_MI_L_Y=filtered_MI_L_Y, log_steps=log_steps)
-                    run.save(figure_path, policy='live')
-                
+                    # Логирование изображения в TensorBoard
+                    if os.path.exists(figure_path):
+                        image = plt.imread(figure_path)
+                        # TensorBoard ожидает изображение в формате (C, H, W)
+                        writer.add_image(f"InfoPlane/{name_subset}", image.transpose(2, 0, 1), steps)
+
                 # Mutual information estimation end
                 # ------------------------------------
 
@@ -427,9 +418,7 @@ def main(cfg: DictConfig):
             loss.backward()
             optimizer.step()
 
-            run.log({f"Loss/train_optimizer": loss.cpu().detach().item()}, step=steps)
-
-            # log_gradients_in_model_wandb(model=model_clf, run=run, step=steps)
+            writer.add_scalar("Loss/train_optimizer", loss.cpu().detach().item(), steps)
 
             steps += 1
             pbar.update(1)
@@ -437,7 +426,11 @@ def main(cfg: DictConfig):
     # Finally log Information Plane
     for name_subset, figure_path in dd_figure_paths.items():
         if os.path.exists(figure_path):
-            run.log({"InfoPlane": wandb.Image(figure_path)})
+            image = plt.imread(figure_path)
+            writer.add_image(f"InfoPlane_Final/{name_subset}", image.transpose(2, 0, 1), steps)
+
+    # Закрываем writer в конце
+    writer.close()
 
 if __name__ == "__main__":
     main()

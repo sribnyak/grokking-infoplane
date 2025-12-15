@@ -1,0 +1,9 @@
+/.venv/
+__pycache__/
+
+/Information-v3/
+/MNIST/
+
+/figures/
+/outputs/
+/runs/

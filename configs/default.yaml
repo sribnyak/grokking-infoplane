@@ -1,4 +1,4 @@
-project_name: delgen-2
+project_name: grokking-infoplane
 custom_run_name : null # null for auto
 seed : 0
 download_directory : ./
