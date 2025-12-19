@@ -13,3 +13,4 @@ hydra-core
 pandas
 scikit-learn
 joblib
+seaborn

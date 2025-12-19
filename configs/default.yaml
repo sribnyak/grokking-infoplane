@@ -6,8 +6,8 @@ download_directory : ./
 # Specify paths to your saved state dicts
 ae:
   L_latent_dim : 4  # Layer dimension after compression.
-  encoder_path : .\autoencoders\X_encoder_4.pt
-  decoder_path : .\autoencoders\X_decoder_4.pt
+  encoder_path : ./autoencoders/X_encoder_4.pt
+  decoder_path : ./autoencoders/X_decoder_4.pt
 
 # Mutual information estimator options
 mi:
