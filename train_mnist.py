@@ -57,31 +57,32 @@ loss_function_dict = {
 )
 def main(cfg: DictConfig):
     torch.set_default_dtype(dtype)
+
+    # Seed everything
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed_all(cfg.seed)
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
 
-    # Создание уникального имени запуска и инициализация TensorBoard Writer
+    # Create unique run_name, prepare TensorBoard
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{cfg.custom_run_name}_{timestamp}" if cfg.custom_run_name else f"run_{timestamp}"
     log_dir = Path("runs") / run_name
     writer = SummaryWriter(log_dir=log_dir)
 
-    # Сохранение конфигурации в TensorBoard текстом
+    # Save config to TensorBoard as text
     config_text = OmegaConf.to_yaml(cfg)
     writer.add_text("config", config_text)
 
-    print(OmegaConf.to_yaml(cfg))
+    print(config_text)
 
     # Filepaths for Information Plane plot
     dd_figure_paths = {}
-    for name_subset in ['train', 'eval']:
-        # Используем локальную директорию
+    for data_subset_name in ['train', 'eval']:
         figure_dir = Path("figures") / run_name
         figure_dir.mkdir(parents=True, exist_ok=True)
-        figure_filename = f"InfoPlane-{run_name}_{name_subset}.png"
-        dd_figure_paths[name_subset] = str(figure_dir / figure_filename)
+        figure_filename = f"InfoPlane-{run_name}_{data_subset_name}.png"
+        dd_figure_paths[data_subset_name] = str(figure_dir / figure_filename)
 
     """
     Data
@@ -161,8 +162,9 @@ def main(cfg: DictConfig):
         dd_X_compressed['eval'] = get_outputs(X_autoencoder.encoder, eval_dataloader, device).numpy()
 
         del X_autoencoder
+
     """
-    Train loop
+    Model, optimizer, loss
     """
     model_clf = MNIST_Classifier(
         width=cfg.model.width,
@@ -204,7 +206,9 @@ def main(cfg: DictConfig):
     # # Save variance of the output of layers for debugging
     # dd_df_bul2 = {}
 
-    # Train !
+    """
+    Train loop!
+    """
     with tqdm(total=cfg.train.optimization_steps) as pbar:
         for x, labels in islice(cycle(train_loader), cfg.train.optimization_steps):
             if (steps < cfg.train.n_first_steps_to_log) or (steps % cfg.train.freqLog == 0):
@@ -215,16 +219,16 @@ def main(cfg: DictConfig):
                 # test_loss_ = (compute_loss(model_clf, test, cfg.train.loss_function, device, N=len(test), batch_size=256))
                 # train_acc_ = (compute_loss_accuracy(model_clf, train, device, N=len(train)))
                 # test_acc_ = (compute_accuracy(model_clf, test, device, N=len(test)))
-                
+
                 # Used later for InfoPlane plotting
                 log_steps.append(steps)
-                # Логирование скаляров в TensorBoard
+                # Log scalars to TensorBoard
                 writer.add_scalar("Loss/train", train_loss_, steps)
                 writer.add_scalar("Loss/test", test_loss_, steps)
                 writer.add_scalar("Acc/train", train_acc_, steps)
                 writer.add_scalar("Acc/test", test_acc_, steps)
 
-                # Log WN
+                # Log WN (L2 of n-th layer weights)
                 wn_layers = []
                 wn_layers.append(get_float_wn(model_clf.linear_1.parameters()))
                 wn_layers.append(get_float_wn(model_clf.linear_2.parameters()))
@@ -249,22 +253,22 @@ def main(cfg: DictConfig):
                     'eval': eval_outputs,
                 }
 
-                for name_subset, outputs_subset in outputs_dict.items():
+                for data_subset_name, outputs_subset in outputs_dict.items():
                     for layer_name in outputs_subset.keys():
                         logits_layer = outputs_subset[layer_name].numpy()
-                        # Entropy logging is not formulated well here 
+                        # Entropy logging is not formulated well here
                         # H_layer_data = entropy(logits_layer, base=2, axis=1)
                         # Never activating on the whole data subset
                         num_dead_nrns = (logits_layer.sum(axis=0) == 0).sum()
 
-                        # Логирование кастомных метрик
-                        # writer.add_scalar(f"H_logits_data_mean_{name_subset}/{layer_name}", H_layer_data.mean(), steps)
-                        # writer.add_scalar(f"H_logits_data_var_{name_subset}/{layer_name}", H_layer_data.var(), steps)
-                        writer.add_scalar(f"logits_mean_{name_subset}/{layer_name}", logits_layer.mean(), steps)
-                        writer.add_scalar(f"logits_var_{name_subset}/{layer_name}", logits_layer.var(), steps)
-                        writer.add_scalar(f"num_dead_nrns_{name_subset}/{layer_name}", num_dead_nrns, steps)
+                        # Log custom stats
+                        # writer.add_scalar(f"H_logits_data_mean_{data_subset_name}/{layer_name}", H_layer_data.mean(), steps)
+                        # writer.add_scalar(f"H_logits_data_var_{data_subset_name}/{layer_name}", H_layer_data.var(), steps)
+                        writer.add_scalar(f"logits_mean_{data_subset_name}/{layer_name}", logits_layer.mean(), steps)
+                        writer.add_scalar(f"logits_var_{data_subset_name}/{layer_name}", logits_layer.var(), steps)
+                        writer.add_scalar(f"num_dead_nrns_{data_subset_name}/{layer_name}", num_dead_nrns, steps)
 
-                # Layers
+                # Get layers outputs for MI estimation
                 # Set apply_agn=True (default) for computing MI
                 eval_outputs = get_layers(model_clf, eval_dataloader, device)
                 train_outputs = get_layers(model_clf, train_loader_nonshuffle, device)
@@ -274,7 +278,7 @@ def main(cfg: DictConfig):
                 }
                 # ------------------------------------
                 # Mutual information estimation start
-                for name_subset, outputs_subset in outputs_dict.items():
+                for data_subset_name, outputs_subset in outputs_dict.items():
                     for layer_name in outputs_subset.keys():
                         this_L_latent_dim = min(
                             cfg.ae.L_latent_dim,
@@ -355,53 +359,53 @@ def main(cfg: DictConfig):
                             )
                             mi_slices = Parallel(n_jobs=-1) \
                                 (delayed(measure_smi_projection)(X_L_mi_estimator, x_.reshape(-1, 1),l_.reshape(-1, 1)) \
-                                    for x_, l_ in zip(dd_X_projected[name_subset],L_projected))
+                                    for x_, l_ in zip(dd_X_projected[data_subset_name],L_projected))
                             X_L_mi_ = np.mean(mi_slices, axis=0)
-                            dd_MI_X_L[name_subset][layer_name].append(X_L_mi_)
+                            dd_MI_X_L[data_subset_name][layer_name].append(X_L_mi_)
                             # (L,Y)
                             L_Y_mi_estimator = mi_estimators.MutualInfoEstimator(
                                 Y_is_discrete=True,
                                 entropy_estimator_params=cfg.mi.entropy_estimator_params
                             )
-                            y_ = dd_targets_mi[name_subset]
+                            y_ = dd_targets_mi[data_subset_name]
                             mi_slices = Parallel(n_jobs=-1) \
                                 (delayed(measure_smi_projection)(L_Y_mi_estimator, l_.reshape(-1, 1), y_) \
                                     for l_ in L_projected)
                             L_Y_mi_ = np.mean(mi_slices, axis=0)
-                            dd_MI_L_Y[name_subset][layer_name].append(L_Y_mi_)
+                            dd_MI_L_Y[data_subset_name][layer_name].append(L_Y_mi_)
                         else:
                             # (X,L)
                             X_L_mi_estimator = mi_estimators.MutualInfoEstimator(
                                 entropy_estimator_params=cfg.mi.entropy_estimator_params)
-                            X_L_mi_estimator.fit(dd_X_compressed[name_subset], L_compressed, verbose=0)
+                            X_L_mi_estimator.fit(dd_X_compressed[data_subset_name], L_compressed, verbose=0)
                             # tuple of size (2) : X_L_mi_[0] - value, X_L_mi_[1] - error
-                            X_L_mi_ = X_L_mi_estimator.estimate(dd_X_compressed[name_subset], L_compressed, verbose=0)
-                            dd_MI_X_L[name_subset][layer_name].append(X_L_mi_)
+                            X_L_mi_ = X_L_mi_estimator.estimate(dd_X_compressed[data_subset_name], L_compressed, verbose=0)
+                            dd_MI_X_L[data_subset_name][layer_name].append(X_L_mi_)
                             # (L,Y)
                             L_Y_mi_estimator = mi_estimators.MutualInfoEstimator(
                                 Y_is_discrete=True,
                                 entropy_estimator_params=cfg.mi.entropy_estimator_params)
-                            L_Y_mi_estimator.fit(L_compressed, dd_targets_mi[name_subset], verbose=0)
+                            L_Y_mi_estimator.fit(L_compressed, dd_targets_mi[data_subset_name], verbose=0)
                             # tuple of size (2) : L_Y_mi_[0] - value, L_Y_mi_[1] - error
-                            L_Y_mi_ = L_Y_mi_estimator.estimate(L_compressed, dd_targets_mi[name_subset], verbose=0)
-                            dd_MI_L_Y[name_subset][layer_name].append(L_Y_mi_)
-                        # Логирование метрик Mutual Information
-                        writer.add_scalar(f"MI(X;L)_{name_subset}/{layer_name}", X_L_mi_[0], steps)
-                        writer.add_scalar(f"MI(L;Y)_{name_subset}/{layer_name}", L_Y_mi_[0], steps)
-                        writer.add_scalar(f"MI(X;L)_Errors_{name_subset}/{layer_name}", X_L_mi_[1], steps)
-                        writer.add_scalar(f"MI(L;Y)_Errors_{name_subset}/{layer_name}", L_Y_mi_[1], steps)
+                            L_Y_mi_ = L_Y_mi_estimator.estimate(L_compressed, dd_targets_mi[data_subset_name], verbose=0)
+                            dd_MI_L_Y[data_subset_name][layer_name].append(L_Y_mi_)
+                        # Log Mutual Information metrics
+                        writer.add_scalar(f"MI(X;L)_{data_subset_name}/{layer_name}", X_L_mi_[0], steps)
+                        writer.add_scalar(f"MI(L;Y)_{data_subset_name}/{layer_name}", L_Y_mi_[0], steps)
+                        writer.add_scalar(f"MI(X;L)_Errors_{data_subset_name}/{layer_name}", X_L_mi_[1], steps)
+                        writer.add_scalar(f"MI(L;Y)_Errors_{data_subset_name}/{layer_name}", L_Y_mi_[1], steps)
 
                     # Plotting Information Plane
-                    figure_path = dd_figure_paths[name_subset]
-                    plot_MI_planes(dd_MI_X_L[name_subset],
-                                    dd_MI_L_Y[name_subset],
+                    figure_path = dd_figure_paths[data_subset_name]
+                    plot_MI_planes(dd_MI_X_L[data_subset_name],
+                                    dd_MI_L_Y[data_subset_name],
                                     figure_path=figure_path,
                                     filtered_MI_X_L=filtered_MI_X_L, filtered_MI_L_Y=filtered_MI_L_Y, log_steps=log_steps)
-                    # Логирование изображения в TensorBoard
+                    # Log image to TensorBoard
                     if os.path.exists(figure_path):
                         image = plt.imread(figure_path)
-                        # TensorBoard ожидает изображение в формате (C, H, W)
-                        writer.add_image(f"InfoPlane/{name_subset}", image.transpose(2, 0, 1), steps)
+                        # TensorBoard expects image of shape (C, H, W)
+                        writer.add_image(f"InfoPlane/{data_subset_name}", image.transpose(2, 0, 1), steps)
 
                 # Mutual information estimation end
                 # ------------------------------------
@@ -424,12 +428,12 @@ def main(cfg: DictConfig):
             pbar.update(1)
 
     # Finally log Information Plane
-    for name_subset, figure_path in dd_figure_paths.items():
+    for data_subset_name, figure_path in dd_figure_paths.items():
         if os.path.exists(figure_path):
             image = plt.imread(figure_path)
-            writer.add_image(f"InfoPlane_Final/{name_subset}", image.transpose(2, 0, 1), steps)
+            writer.add_image(f"InfoPlane_Final/{data_subset_name}", image.transpose(2, 0, 1), steps)
 
-    # Закрываем writer в конце
+    # Closing TensorBoard
     writer.close()
 
 if __name__ == "__main__":
