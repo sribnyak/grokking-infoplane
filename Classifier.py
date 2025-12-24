@@ -1,5 +1,5 @@
 import torch
-from mutinfo.torch.layers import AdditiveGaussianNoise
+from autoencoders.noise_layer import AdditiveGaussianNoise
 
 sigma = 1e-3  # Noise-to-signal ratio. From Information-v3 repo
 

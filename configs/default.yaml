@@ -13,12 +13,8 @@ ae:
 mi:
   sigma : 1e-3   # Noise-to-signal ratio.
   agn_relative_scale : False # AGN relative scale
-  entropy_estimator_params :
-    method: "KL"
-    functional_params:
-      n_jobs: 4
-      k_neighbours: 20 # > 1 means weighted KL; 5 is enough for MNIST
-    rescale: True
+  ksg:
+    k_neighbors: 20 # > 1 means weighted KL; 5 is enough for MNIST
   compression : 'pca' # ['autoencoders', 'first_coords', 'pca', 'smi']
   pca:
     whiten_flag: True 

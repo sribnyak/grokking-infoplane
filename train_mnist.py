@@ -24,8 +24,8 @@ from omegaconf import DictConfig, OmegaConf
 from utils import *
 from get_ae import *
 from Classifier import MNIST_Classifier
-from mutinfo.torch.layers import AdditiveGaussianNoise
-import mutinfo.estimators.mutual_information as mi_estimators
+from autoencoders.noise_layer import AdditiveGaussianNoise
+from mutinfo.estimators.knn import KSG
 
 warnings.filterwarnings("ignore")
 # plt.style.use('dark_background')
@@ -105,9 +105,7 @@ def main(cfg: DictConfig):
     train_subset_indices = np.random.choice(a=len(train), size=cfg.train.train_points, replace=False)
     train = torch.utils.data.Subset(train, train_subset_indices)
 
-    """
-    More workers make error in L_Y_mi_estimator.estimate(L_compressed, targets, verbose=0)
-    """
+    # More workers?
     train_loader = torch.utils.data.DataLoader(train, batch_size=cfg.train.batch_size, shuffle=True,
                                                num_workers=0,
                                                pin_memory=True,
@@ -189,6 +187,7 @@ def main(cfg: DictConfig):
     # Autoencoders.
     L_autoencoders = dict()
     # Mutual information.
+    mi_estimator = KSG(k_neighbors=cfg.mi.ksg.k_neighbors)
     dd_MI_X_L = {}
     dd_MI_X_L['train'] = defaultdict(list)
     dd_MI_X_L['eval'] = defaultdict(list)
@@ -354,40 +353,24 @@ def main(cfg: DictConfig):
 
                         if cfg.mi.compression == 'smi':
                             # (X,L)
-                            X_L_mi_estimator = mi_estimators.MutualInfoEstimator(
-                                entropy_estimator_params=cfg.mi.entropy_estimator_params,
-                            )
                             mi_slices = Parallel(n_jobs=-1) \
-                                (delayed(measure_smi_projection)(X_L_mi_estimator, x_.reshape(-1, 1),l_.reshape(-1, 1)) \
+                                (delayed(measure_smi_projection)(mi_estimator, x_.reshape(-1, 1), l_.reshape(-1, 1)) \
                                     for x_, l_ in zip(dd_X_projected[data_subset_name],L_projected))
                             X_L_mi_ = np.mean(mi_slices, axis=0)
                             dd_MI_X_L[data_subset_name][layer_name].append(X_L_mi_)
                             # (L,Y)
-                            L_Y_mi_estimator = mi_estimators.MutualInfoEstimator(
-                                Y_is_discrete=True,
-                                entropy_estimator_params=cfg.mi.entropy_estimator_params
-                            )
                             y_ = dd_targets_mi[data_subset_name]
                             mi_slices = Parallel(n_jobs=-1) \
-                                (delayed(measure_smi_projection)(L_Y_mi_estimator, l_.reshape(-1, 1), y_) \
+                                (delayed(measure_smi_projection)(mi_estimator, l_.reshape(-1, 1), y_) \
                                     for l_ in L_projected)
                             L_Y_mi_ = np.mean(mi_slices, axis=0)
                             dd_MI_L_Y[data_subset_name][layer_name].append(L_Y_mi_)
                         else:
-                            # (X,L)
-                            X_L_mi_estimator = mi_estimators.MutualInfoEstimator(
-                                entropy_estimator_params=cfg.mi.entropy_estimator_params)
-                            X_L_mi_estimator.fit(dd_X_compressed[data_subset_name], L_compressed, verbose=0)
-                            # tuple of size (2) : X_L_mi_[0] - value, X_L_mi_[1] - error
-                            X_L_mi_ = X_L_mi_estimator.estimate(dd_X_compressed[data_subset_name], L_compressed, verbose=0)
+                            # (X,L) -> val, std
+                            X_L_mi_ = mi_estimator(dd_X_compressed[data_subset_name], L_compressed, std=True)
                             dd_MI_X_L[data_subset_name][layer_name].append(X_L_mi_)
-                            # (L,Y)
-                            L_Y_mi_estimator = mi_estimators.MutualInfoEstimator(
-                                Y_is_discrete=True,
-                                entropy_estimator_params=cfg.mi.entropy_estimator_params)
-                            L_Y_mi_estimator.fit(L_compressed, dd_targets_mi[data_subset_name], verbose=0)
-                            # tuple of size (2) : L_Y_mi_[0] - value, L_Y_mi_[1] - error
-                            L_Y_mi_ = L_Y_mi_estimator.estimate(L_compressed, dd_targets_mi[data_subset_name], verbose=0)
+                            # (L,Y) -> val, std
+                            L_Y_mi_ = mi_estimator(L_compressed, dd_targets_mi[data_subset_name], std=True)
                             dd_MI_L_Y[data_subset_name][layer_name].append(L_Y_mi_)
                         # Log Mutual Information metrics
                         writer.add_scalar(f"MI(X;L)_{data_subset_name}/{layer_name}", X_L_mi_[0], steps)

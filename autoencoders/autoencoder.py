@@ -1,6 +1,6 @@
 import torch
 from tqdm import tqdm
-from mutinfo.torch.layers import AdditiveGaussianNoise
+from .noise_layer import AdditiveGaussianNoise
 
 
 class MNIST_ConvEncoder(torch.nn.Module):

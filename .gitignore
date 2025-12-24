@@ -1,7 +1,7 @@
 /.venv/
 __pycache__/
+/archive/
 
-/Information-v3/
 /MNIST/
 
 /figures/
