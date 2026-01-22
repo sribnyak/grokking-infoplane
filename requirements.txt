@@ -15,4 +15,4 @@ scikit-learn
 joblib
 seaborn
 tbparse
-git+https://github.com/sribnyak/mutinfo.git
+git+https://github.com/VanessB/mutinfo.git
